@@ -14,3 +14,4 @@ if __name__ == "__main__":
     a = MainWindow()
     a.show()
     sys.exit(app.exec())
+    1
