@@ -64,7 +64,7 @@ class SaveButton(QPushButton):
         file_names = QFileDialog().getSaveFileName()[0]
         if not file_names:
             return
-        self.file_selected.emit(file_names[0])
+        self.file_selected.emit(file_names)
 
 
 class SaveField(QLineEdit):
