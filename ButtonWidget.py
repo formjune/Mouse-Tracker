@@ -40,15 +40,39 @@ class OpenButton(QPushButton):
 
     def __init__(self):
         QPushButton.__init__(self)
-        self.setText("open")
+        self.setText("input")
         self.setFixedSize(44, 20)
 
     def mousePressEvent(self, event):
-        file_names = QFileDialog().getOpenFileNames()[0]
+        file_names = QFileDialog().getOpenFileName()
         if not file_names:
             return
         self.file_selected.emit(file_names[0])
 
+
+class SaveButton(QPushButton):
+    """open new video button"""
+
+    file_selected = pyqtSignal(str)  # send video file to play
+
+    def __init__(self):
+        QPushButton.__init__(self)
+        self.setText("output")
+        self.setFixedSize(44, 20)
+
+    def mousePressEvent(self, event):
+        file_names = QFileDialog().getSaveFileName()[0]
+        if not file_names:
+            return
+        self.file_selected.emit(file_names[0])
+
+
+class SaveField(QLineEdit):
+    """field for saving files"""
+
+    def setFromOutput(self, file_name):
+        """automatically replace name from input"""
+        self.setText(os.path.splitext(file_name)[0] + "_output.avi")
 
 
 if __name__ == "__main__":

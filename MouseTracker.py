@@ -8,7 +8,7 @@ import numpy as np
 class VideoReader(object):
     """multi threading video reader writer"""
 
-    def __init__(self, input_name, output_name, size=(720, 480), start=0, end=5, frame_queue=None):
+    def __init__(self, input_name, output_name, size=(1280, 720), start=0, end=5, frame_queue=None):
         self.video_reader = cv2.VideoCapture(input_name)
         self.fps = self.video_reader.get(cv2.CAP_PROP_FPS)
         self.size = size
@@ -48,9 +48,15 @@ class VideoReader(object):
             self.frames_stock[frame_number] = frame_array, point
             while self.current_frame_in in self.frames_stock:
                 frame_array, point = self.frames_stock.pop(self.current_frame_in)
-                self.points_stock.append(point)
-                self.points_stock = self.points_stock[-25:]     # leave last 25 path points only
-                # record path info frame !!!
+                self.points_stock = self.points_stock[-250:]  # leave last 25 path points only
+                if point is not None:
+                    moments = cv2.moments(point)
+                    x = int(moments["m10"] / moments["m00"])
+                    y = int(moments["m01"] / moments["m00"])
+                    self.points_stock.append((x, y))
+                for i in range(len(self.points_stock) - 1):
+                    cv2.line(frame_array, self.points_stock[i], self.points_stock[i + 1], (0, 0xff, 0xff))
+
                 self.video_writer.write(frame_array)
                 if self.frame_queue:
                     self.frame_queue.put((self.current_second_in, frame_array))
@@ -59,62 +65,75 @@ class VideoReader(object):
 
     def stop(self):
         """finish recording"""
-        if self.video_writer.isOpened():
-            self.video_writer.release()
+        with self.lock:
+            if self.video_writer.isOpened():
+                self.video_writer.release()
 
 
-def findCircleMask(array):
-    """find circle from gray array. returns binary mask"""
+def threadProceed(video_reader, background, border, mask):
+    """thread for mouse tracking
+    background - first frame. gray
+    border - circle or None, made for drawing on frame
+    mask - boolean matrix for filters"""
 
-    def contourSort(contour_block):
-        """get new contour block like (x, y, radius) and return it's vector length"""
-        x = (contour_block[0] - center_x) ** 2
-        y = (contour_block[1] - center_y) ** 2
-        r = (contour_block[2] - center_y) ** 2
-        return math.sqrt(x + y + r)     # vector length
+    def checkContour(contour):
+        """analyze contours for border and return true if contour is good"""
+        for line in contour:
+            x = line[0][0] - border[0]
+            y = line[0][1] - border[1]
+            length = math.sqrt(x ** 2 + y ** 2)
+            if length / border[2] >= .99:
+                return False
+        return True
 
-    # array = cv2.threshold(array, 220, 255, cv2.THRESH_BINARY)[1]
-    circles = cv2.HoughCircles(array, cv2.HOUGH_GRADIENT, 1, 20, param1=50, param2=30)[0]
-    center_x = array.shape[1] / 2.
-    center_y = array.shape[0] / 2.
-    circles = sorted(circles, key=contourSort)
-    if circles:
-        mask_array = np.zeros(array.shape, dtype=np.uint8)
-        c = circles[0]
-        cv2.circle(mask_array, (c[0], c[1]), c[2], (0xff, ), thickness=-1)
-        return mask_array
-
-    else:   # return whole field as mask
-        return np.ones(array.shape, dtype=np.uint8) * 255
-
-
-
-
-
-
-def threadProceed(video_reader, background):
-    """thread for mouse tracking"""
     while video_reader.video_writer.isOpened():
 
-
-        t, f = video_reader.getFrame()
-        if t is None:
+        number, original = video_reader.getFrame()
+        if number is None:
             break
-        a.setFrame(t, cv2.GaussianBlur(f, (13, 13), 0), None)
+
+        if border is not None:
+            cv2.circle(original, (border[0], border[1]), border[2], (0, 0xff, 0), thickness=2)
+
+        frame = cv2.cvtColor(original, cv2.COLOR_BGR2GRAY)  # convert to gray
+        frame = cv2.GaussianBlur(frame, (11, 11), 0)    # smooth
+        frame = cv2.absdiff(frame, background)  # find difference
+        # video_reader.setFrame(number, cv2.merge((frame, frame, frame)), None)
+
+        frame = cv2.threshold(frame, 20, 255, cv2.THRESH_BINARY)[1]     # remove small difference
+        frame = cv2.dilate(frame, None, iterations=10)   # swell mouse
+        frame &= mask   # remove outside borders
+        contours = cv2.findContours(frame, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)[1]  # find contours
+        contours.sort(key=lambda x: cv2.contourArea(x), reverse=True)   # sort by size
+
+        for contour in contours:
+            if checkContour(contour):
+                cv2.drawContours(original, [contour], 0, (0, 0, 255), 2)
+                video_reader.setFrame(number, original, contour)
+                break
+        else:
+            video_reader.setFrame(number, original, None)
 
 
-def startTracking(video_reader):
+def startTracking(video_reader, center, radius):
     """main thread for tracking mouse"""
     background = video_reader.getBackground()
-    mask = findCircleMask(background)
-    cv2.imshow("w", mask)
-    cv2.waitKey()
-    cv2.destroyAllWindows()
-    return
+
+    mask = np.zeros(background.shape, dtype=np.uint8)
+    x = int(center[0] * background.shape[1])
+    y = int(center[1] * background.shape[0])
+    radius = int(radius * background.shape[1])
+    cv2.circle(mask, (x, y), radius, (0xff, ), thickness=-1)
+    circle = [x, y, radius]
+
+    # circle, mask = findCircleMask(background)
+    # cv2.imshow("w", mask)
+    # cv2.waitKey()
+    # cv2.destroyAllWindows()
 
     threads = []
     for i in range(8):  # 8 threads is most optimal +100% of speed
-        threads.append(threading.Thread(target=threadProceed, args=(video_reader, background)))
+        threads.append(threading.Thread(target=threadProceed, args=(video_reader, background, circle, mask)))
     for thread in threads:
         thread.start()
     for thread in threads:
@@ -122,5 +141,6 @@ def startTracking(video_reader):
     video_reader.stop()
 
 
-a = VideoReader("D:/downloads/videoplayback.mp4", "D:/a.avi", end=10)
-startTracking(a)
+if __name__ == "__main__":
+    a = VideoReader("D:/downloads/videoplayback.mp4", "D:/a.avi", end=10)
+    startTracking(a)
